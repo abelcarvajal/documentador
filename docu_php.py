@@ -1,3 +1,4 @@
+from datetime import datetime
 import re
 from pathlib import Path
 import logging
@@ -222,7 +223,8 @@ def generate_md(file_path: Path, php_data: dict, js_data: dict, languages: set):
 
     
     md_content = f"""## **Nombre Aplicativo:** {file_path.name}
-    
+### **Fecha de creación/modificación: ** {datetime.now().strftime('%Y-%m-%d')}
+
 ### Lenguaje de programación utilizado:
 * {languages_str}
 
@@ -251,7 +253,7 @@ function {php_funcs_str}
 
 # ** JavaScript: **
 
-* function {js_funcs_str}()
+* function {js_funcs_str}
 
 ### **Listado de Variables implicadas **
 
@@ -269,12 +271,15 @@ function {php_funcs_str}
 * {php_globales_str}
 
 ### **Conexion a base de datos**
-* 
+
+* PostgreSQL
 
 ### **Tablas Base de datos consultadas / Entidad relacion**
 * {php_tables_str}
 
 ### **Tipo de Conector Bases de Datos:**
+
+* 
 
 ### **Elaborado  Por:**
 
@@ -323,4 +328,4 @@ def process_php_file(file_path):
     )
 
 # Ejecutar el script
-process_php_file(Path("files/AppController.php"))
+process_php_file(Path("files/verificacion_interface_manager.php"))
