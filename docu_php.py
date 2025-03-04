@@ -96,19 +96,21 @@ def parse_php_variables(code):
     code_sin_comments = re.sub(r'//.*?$|/\*.*?\*/|\#.*?$', '', code, flags=re.MULTILINE | re.DOTALL)
     variables = set()
     globales = set()
-    
+
     # Detect class properties
     class_props = re.findall(r'\$this->(\w+)', code_sin_comments)
     for prop in class_props:
         variables.add(f'$this->{prop}')
-    
+
     # Detect global variables
-    global_matches = re.findall(r'global\s+(\$[a-zA-Z_]\w*)', code_sin_comments)
-    globales.update(global_matches)
-    
+    global_matches = re.findall(r'global\s+([\$a-zA-Z_]\w*(?:\s*,\s*[\$a-zA-Z_]\w*)*)', code_sin_comments)
+    for match in global_matches:
+        vars_in_declaration = re.findall(r'[\$a-zA-Z_]\w*', match)
+        globales.update(vars_in_declaration)
+
     if '$GLOBALS' in code_sin_comments:
         globales.add('$GLOBALS')
-    
+
     # Detect function parameters
     func_params = re.findall(r'function\s*\((.*?)\)', code_sin_comments)
     for params in func_params:
@@ -118,7 +120,7 @@ def parse_php_variables(code):
                 clean_var = clean_variable_name(param)
                 if clean_var and not should_exclude_variable(clean_var):
                     variables.add(clean_var)
-    
+
     # Detect regular variables
     var_patterns = [
         r'\$[a-zA-Z_]\w*',  # Basic variables
@@ -127,14 +129,14 @@ def parse_php_variables(code):
         r'"\$[a-zA-Z_]\w*"',  # String interpolation double quotes
         r'\'\$[a-zA-Z_]\w*\'',  # String interpolation single quotes
     ]
-    
+
     for pattern in var_patterns:
         matches = re.findall(pattern, code_sin_comments)
         for match in matches:
             clean_var = clean_variable_name(match)
             if clean_var and not should_exclude_variable(clean_var):
                 variables.add(clean_var)
-    
+
     locales = variables - globales
     return {'globales': globales, 'locales': locales}
 
@@ -169,39 +171,106 @@ def parse_js_functions(code):
             functions.add(match[1])
     return functions
 
+def leer_conexiones_md(archivo_conexiones):
+    """Lee el archivo conexiones.md y devuelve un diccionario con las conexiones y sus descripciones."""
+    conexiones_md = {}
+    with open(archivo_conexiones, 'r', encoding='utf-8') as f:
+        for line in f:
+            match = re.match(r'\*\s+\`(\$[a-zA-Z0-9_]+)\`: (.+)', line)
+            if match:
+                conexiones_md[match.group(1)] = match.group(2)
+    return conexiones_md
+
+def parse_conector_db(code, archivo_conexiones="conexiones.md"):
+    """Detecta y lista los tipos de conectores de base de datos utilizados, con descripciones."""
+    conectores = set()
+    conexiones_md = leer_conexiones_md(archivo_conexiones)
+
+    # Buscar todas las variables que se utilizan con el operador `->`
+    variable_pattern = re.compile(r'(\$[a-zA-Z_]\w*)\s*->')
+    variables = set(variable_pattern.findall(code))
+
+    logging.debug(f"Variables encontradas con `->`: {variables}")
+
+    # Verificar si alguna de las variables coincide con las conexiones conocidas
+    for var in variables:
+        if var in conexiones_md:
+            logging.debug(f"Conexión potencial encontrada: {var}")
+            # Verificar si la conexión se utiliza en una operación de base de datos
+            if re.search(rf'{re.escape(var)}\s*->\s*(conectar|_Execute|Execute|query|prepare)\s*\(', code, re.IGNORECASE):
+                logging.debug(f"Conexión utilizada: {var}")
+                descripcion = conexiones_md.get(var, "Descripción no encontrada")
+                logging.debug(f"Descripción de la conexión: {descripcion}")
+                conectores.add(var)
+            else:
+                logging.debug(f"Conexión no utilizada: {var}")
+
+    return sorted(conectores)
+
+def parse_base_datos(code, conectores):
+    """Base de datos (MySQL, PostgreSQL, SQLite, Oracle)."""
+    db_types = {}
+    
+    try:
+        with open('conexiones.md', 'r', encoding='utf-8') as f:
+            conexiones = f.readlines()
+        
+        for conector in conectores:
+            for linea in conexiones:
+                if conector in linea:
+                    db_type = linea.split(':')[1].strip()
+                    db_types[conector] = db_type
+                    break
+    except FileNotFoundError:
+        logging.error("El archivo conexiones.md no se encuentra.")
+    
+    return db_types
+
 def parse_php_tables(code):
     """Consulta las tablas usadas en el código PHP, ignorando comentarios."""
     tables = set()
-    
+
     # Eliminar comentarios del código
-    code_sin_comentarios = re.sub(r'//.*?$|/\*.*?\*/', '', code, flags=re.MULTILINE | re.DOTALL)
-    
-    # Detectar patrones SQL en la cláusula FROM
-    sql_pattern = re.compile(r'\b(SELECT|INSERT|UPDATE|DELETE)\s+.*?\bFROM\s+([`\'"]?)(\w+)(?:\.\w+)?\2(?:\s+AS\s+\w+)?(?:,\s*([`\'"]?)(\w+)(?:\.\w+)?\5(?:\s+AS\s+\w+)?)*', re.IGNORECASE)
-    
+    code_sin_comentarios = re.sub(r'//.*?$|/\*.*?\*/|\#.*?$', '', code, flags=re.MULTILINE | re.DOTALL)
+
+    # Detectar patrones SQL en la cláusula FROM, JOIN y UPDATE
+    sql_pattern = re.compile(
+        r'\b(SELECT|INSERT|UPDATE|DELETE)\s+.*?\bFROM\s+([`\'"]?)(\w+)(?:\.\w+)?\2(?:\s+AS\s+\w+)?'  # FROM clause
+        r'|'  # OR
+        r'\b(SELECT|INSERT|UPDATE|DELETE)\s+.*?\bJOIN\s+([`\'"]?)(\w+)(?:\.\w+)?\6(?:\s+AS\s+\w+)?'  # JOIN clause
+        r'|'  # OR
+        r'\bUPDATE\s+([`\'"]?)(\w+)(?:\.\w+)?\7\b'  # UPDATE clause
+        r'|'  # OR
+        r'\bINSERT\s+INTO\s+([`\'"]?)(\w+)(?:\.\w+)?\8\b'  # INSERT INTO clause
+        r'|'  # OR
+        r'\bDELETE\s+FROM\s+([`\'"]?)(\w+)(?:\.\w+)?\9\b'  # DELETE FROM clause
+        r'(?:,\s*([`\'"]?)(\w+)(?:\.\w+)?\4(?:\s+AS\s+\w+)?)*',  # Multiple tables
+        re.IGNORECASE | re.DOTALL
+    )
+
     # Buscar tablas en las consultas
     matches = sql_pattern.findall(code_sin_comentarios)
-    
+
     # Loguear las coincidencias encontradas
     logging.debug(f"SQL Matches found: {matches}")
-    
+
     for match in matches:
-        # Agregar solo si el nombre de la tabla es válido
-        if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', match[2]):  # Validar nombre de tabla
-            tables.add(match[2])  # Primera tabla
-        if match[4] and re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', match[4]):  # Validar segunda tabla
-            tables.add(match[4])  # Segunda tabla
-    
+        # Extraer las tablas de los diferentes grupos de captura
+        for i in range(2, len(match), 3):  # Saltar el primer grupo (comando SQL) y avanzar de 3 en 3
+            table = match[i]
+            if table and re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', table):  # Validar nombre de tabla
+                tables.add(table)
+
     logging.debug(f"Detected tables: {tables}")
-    
+
     return sorted(tables)
-    
+
 def generate_md(file_path: Path, php_data: dict, js_data: dict, languages: set):
     output_dir = Path("docs/")
     output_dir.mkdir(exist_ok=True)  # Ensure output directory exists
     file_md = file_path.with_suffix('.md').name
     output_file = output_dir / file_md
-    
+
     php_globales = sorted(php_data['variables']['globales'])
     php_locales = sorted(php_data['variables']['locales'])
     php_funcs = sorted(php_data['functions'])
@@ -209,8 +278,9 @@ def generate_md(file_path: Path, php_data: dict, js_data: dict, languages: set):
     php_tables = sorted(php_data.get('tables', []))
     js_vars = sorted(js_data['variables'])
     js_funcs = sorted(js_data['functions'])
-    
-    
+    conectores = sorted(php_data.get('conectores', []))
+    db_types = parse_base_datos(file_path.read_text(encoding='ISO-8859-1'), conectores)
+
     php_globales_str = '\n* '.join(php_globales) if php_globales else '*Sin variables globales*'
     php_locales_str = '\n- '.join(php_locales) if php_locales else '*Sin variables locales*'
     php_funcs_str = '\nfunction '.join(php_funcs) if php_funcs else '*Sin funciones*'
@@ -219,8 +289,8 @@ def generate_md(file_path: Path, php_data: dict, js_data: dict, languages: set):
     js_vars_str = '\n* '.join(js_vars) if js_vars else '*Sin variables*'
     js_funcs_str = '\n* function '.join(js_funcs) if js_funcs else '*Sin funciones*'
     languages_str = '\n* '.join(sorted(languages)) if languages else '*Sin lenguajes detectados*'
-
-
+    conectores_str = '\n* '.join(conectores) if conectores else '*No se detectó conector de base de datos*'
+    base_datos_str = '\n* '.join([f"{conector}: {db_types.get(conector, '*No se encontró tipo de base de datos*')}" for conector in conectores])
     
     md_content = f"""## **Nombre Aplicativo:** {file_path.name}
 ### **Fecha de creación/modificación: ** {datetime.now().strftime('%Y-%m-%d')}
@@ -237,6 +307,7 @@ def generate_md(file_path: Path, php_data: dict, js_data: dict, languages: set):
 
 ```
 
+
 ### **URL**
 
 * {file_path.name} -> [Ruta archivo: {file_path.name}](../{file_path.name})
@@ -247,9 +318,11 @@ def generate_md(file_path: Path, php_data: dict, js_data: dict, languages: set):
 
 ### Funciones:
 # **PHP: **
+
 ```
 function {php_funcs_str}
 ```
+
 
 # ** JavaScript: **
 
@@ -262,6 +335,8 @@ function {php_funcs_str}
 - {php_locales_str}
 ```
 
+
+
 # **JavaScript:**
 * {js_vars_str}
 
@@ -272,14 +347,14 @@ function {php_funcs_str}
 
 ### **Conexion a base de datos**
 
-* PostgreSQL
+* {base_datos_str}
 
 ### **Tablas Base de datos consultadas / Entidad relacion**
 * {php_tables_str}
 
 ### **Tipo de Conector Bases de Datos:**
 
-* 
+* {conectores_str}
 
 ### **Elaborado  Por:**
 
@@ -296,17 +371,18 @@ def process_php_file(file_path):
     except UnicodeDecodeError:
         code = Path(file_path).read_text(encoding='ISO-8859-1')
     blocks = detect_language_blocks(code)
-    
+
     php_vars = {'globales': set(), 'locales': set()}
     php_funcs = set()
     js_vars = set()
     js_funcs = set()
     libraries = set()
     tables = set()
-    
+    conectores = set()
+
     # Detectar lenguajes utilizados
     languages = detect_languages(code)
-    
+
     for lang, block in blocks:
         if lang == 'php':
             parsed_vars = parse_php_variables(block)
@@ -315,17 +391,18 @@ def process_php_file(file_path):
             php_funcs.update(parse_php_functions(block))
             libraries.update(parse_php_libraries(block))
             tables.update(parse_php_tables(block))
-            
+            conectores.update(parse_conector_db(block))
+
         elif lang == 'js':
             js_vars.update(parse_js_variables(block))
             js_funcs.update(parse_js_functions(block))
-    
+
     generate_md(
         file_path,
-        {'variables': php_vars, 'functions': php_funcs, 'libraries': libraries, 'tables': tables},
+        {'variables': php_vars, 'functions': php_funcs, 'libraries': libraries, 'tables': tables, 'conectores': conectores},
         {'variables': js_vars, 'functions': js_funcs},
         languages
     )
 
 # Ejecutar el script
-process_php_file(Path("files/reporte_venta_vendedor1.php"))
+process_php_file(Path("files/generar_reporte_app_recaudos_consuertepay.php"))
