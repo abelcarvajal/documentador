@@ -3,6 +3,7 @@ import re
 import chardet
 from pathlib import Path
 import logging
+import subprocess
 logging.basicConfig(level=logging.DEBUG, format='%(message)s')
 
 def detect_encoding(file_path):
