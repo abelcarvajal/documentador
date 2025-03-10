@@ -82,12 +82,24 @@ def detect_language_blocks(code):
     
     return blocks
 
+def remove_comments(code):
+    """
+    Elimina todos los comentarios del código (/* */, //, #)
+    
+    Args:
+        code (str): Código fuente
+    Returns:
+        str: Código sin comentarios
+    """
+    return re.sub(r'/\*[\s\S]*?\*/|//.*?$|#.*?$', '', code, flags=re.MULTILINE | re.DOTALL)
+
+
 def parse_php_libraries(code):
     """Identifica todas las librerías incluidas en el código PHP."""
     libraries = set()
     
     # Eliminar comentarios para evitar falsos positivos
-    code_sin_comentarios = re.sub(r'/\*[\s\S]*?\*/|//.*?$', '', code, flags=re.MULTILINE)
+    code_sin_comentarios = remove_comments(code)
     
     # Patrones MEJORADOS para todas las formas de include/require
     include_patterns = [
@@ -199,7 +211,7 @@ def parse_php_variables(code):
     variables = {'globales': set(), 'locales': set()}
     
     # Eliminar comentarios del código para mejor análisis
-    code_sin_comentarios = re.sub(r'/\*[\s\S]*?\*/|//.*?$', '', code, flags=re.MULTILINE)
+    code_sin_comentarios = remove_comments(code)
     
     # 1. DETECCIÓN MEJORADA DE VARIABLES GLOBALES
     # Capturar todas las declaraciones "global" en una primera pasada
@@ -257,6 +269,9 @@ def parse_js_variables(code):
     """Variables JS."""
     variables = set()
     
+    # Eliminar comentarios en JavaScript
+    code_sin_comentarios = remove_comments(code)
+    
     patterns = [
         r'\b(?:var|let|const)\s+(\w+)\b',
         r'(?:window|global)\.(\w+)\s*=',
@@ -264,7 +279,7 @@ def parse_js_variables(code):
     ]
     
     for pattern in patterns:
-        matches = re.finditer(pattern, code)
+        matches = re.finditer(pattern, code_sin_comentarios)
         for match in matches:
             variables.add(match.group(1))
             
@@ -367,7 +382,7 @@ def parse_php_functions(code):
     functions = set()
     
     # Primero eliminamos los comentarios
-    code = re.sub(r'/\*[\s\S]*?\*/|//.*?$', '', code, flags=re.MULTILINE)
+    code = remove_comments(code)
     
     # Patrones mejorados para detectar funciones
     patterns = [
@@ -405,6 +420,9 @@ def parse_js_functions(code):
     """Funciones JS (function y arrow)."""
     functions = set()
     
+    # Eliminar comentarios en JavaScript
+    code_sin_comentarios = remove_comments(code)
+    
     patterns = [
         r'function\s+(\w+)\s*\(',  # Funciones normales
         r'const\s+(\w+)\s*=\s*\([^)]*\)\s*=>', # Arrow functions
@@ -414,11 +432,32 @@ def parse_js_functions(code):
     ]
     
     for pattern in patterns:
-        matches = re.finditer(pattern, code)
+        matches = re.finditer(pattern, code_sin_comentarios)
         for match in matches:
             functions.add(match.group(1))
             
     return functions
+
+def filter_used_functions(code, declared_functions):
+    """Filtra las funciones que son realmente utilizadas en el código."""
+    used_functions = set()
+    
+    for function_name in declared_functions:
+        # Patrones para buscar llamadas a funciones
+        patterns = [
+            rf'\b{re.escape(function_name)}\s*\(',  # Llamada directa
+            rf'call_user_func\(\s*[\'"]?{re.escape(function_name)}[\'"]?',  # PHP call_user_func
+            rf'[\'"]?{re.escape(function_name)}[\'"]?\s*=>',  # Como callback en array
+            rf'\.{re.escape(function_name)}\(',  # JavaScript method call
+        ]
+        
+        # Si se encuentra algún patrón, considerar la función como utilizada
+        for pattern in patterns:
+            if re.search(pattern, code, re.IGNORECASE):
+                used_functions.add(function_name)
+                break
+    
+    return used_functions
 
 def leer_conexiones_md(archivo_conexiones):
     """Lee el archivo conexiones.md y devuelve un diccionario con las conexiones y sus descripciones."""
@@ -434,10 +473,14 @@ def parse_conector_db(code, archivo_conexiones="conexiones.md"):
     """Detecta y lista los tipos de conectores de base de datos utilizados, con descripciones."""
     conectores = set()
     conexiones_md = leer_conexiones_md(archivo_conexiones)
+    
+    # Eliminar comentarios del código antes de procesar
+    code_sin_comentarios = remove_comments(code)
+
 
     # Buscar todas las variables que se utilizan con el operador `->`
     variable_pattern = re.compile(r'(\$[a-zA-Z_]\w*)\s*->')
-    variables = set(variable_pattern.findall(code))
+    variables = set(variable_pattern.findall(code_sin_comentarios))
 
     logging.debug(f"Variables encontradas con `->`: {variables}")
 
@@ -446,7 +489,7 @@ def parse_conector_db(code, archivo_conexiones="conexiones.md"):
         if var in conexiones_md:
             logging.debug(f"Conexión potencial encontrada: {var}")
             # Verificar si la conexión se utiliza en una operación de base de datos
-            if re.search(rf'{re.escape(var)}\s*->\s*(conectar|_Execute|Execute|query|prepare)\s*\(', code, re.IGNORECASE):
+            if re.search(rf'{re.escape(var)}\s*->\s*(conectar|_Execute|Execute|query|prepare)\s*\(', code_sin_comentarios, re.IGNORECASE):
                 logging.debug(f"Conexión utilizada: {var}")
                 descripcion = conexiones_md.get(var, "Descripción no encontrada")
                 logging.debug(f"Descripción de la conexión: {descripcion}")
@@ -476,42 +519,53 @@ def parse_base_datos(code, conectores):
     return db_types
 
 def parse_php_tables(code):
-    """Consulta las tablas usadas en el código PHP, ignorando comentarios."""
+    """Consulta las tablas usadas en el código PHP, maneja múltiples tablas en FROM."""
     tables = set()
-
+    
     # Eliminar comentarios del código
-    code_sin_comentarios = re.sub(r'//.*?$|/\*.*?\*/|\#.*?$', '', code, flags=re.MULTILINE | re.DOTALL)
-
-    # Detectar patrones SQL en la cláusula FROM, JOIN y UPDATE
-    sql_pattern = re.compile(
-        r'\b(SELECT|INSERT|UPDATE|DELETE)\s+.*?\bFROM\s+([`\'"]?)(\w+)(?:\.\w+)?\2(?:\s+AS\s+\w+)?'  # FROM clause
-        r'|'  # OR
-        r'\b(SELECT|INSERT|UPDATE|DELETE)\s+.*?\bJOIN\s+([`\'"]?)(\w+)(?:\.\w+)?\6(?:\s+AS\s+\w+)?'  # JOIN clause
-        r'|'  # OR
-        r'\bUPDATE\s+([`\'"]?)(\w+)(?:\.\w+)?\7\b'  # UPDATE clause
-        r'|'  # OR
-        r'\bINSERT\s+INTO\s+([`\'"]?)(\w+)(?:\.\w+)?\8\b'  # INSERT INTO clause
-        r'|'  # OR
-        r'\bDELETE\s+FROM\s+([`\'"]?)(\w+)(?:\.\w+)?\9\b'  # DELETE FROM clause
-        r'(?:,\s*([`\'"]?)(\w+)(?:\.\w+)?\4(?:\s+AS\s+\w+)?)*',  # Multiple tables
-        re.IGNORECASE | re.DOTALL
-    )
-
-    # Buscar tablas en las consultas
-    matches = sql_pattern.findall(code_sin_comentarios)
-
-    # Loguear las coincidencias encontradas
-    logging.debug(f"SQL Matches found: {matches}")
-
-    for match in matches:
-        # Extraer las tablas de los diferentes grupos de captura
-        for i in range(2, len(match), 3):  # Saltar el primer grupo (comando SQL) y avanzar de 3 en 3
-            table = match[i]
-            if table and re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', table):  # Validar nombre de tabla
+    code_sin_comentarios = remove_comments(code)
+    
+    # Buscar cadenas SQL en el código
+    sql_patterns = [
+        r'=\s*[\'"](?:\s*SELECT|INSERT|UPDATE|DELETE).+?[\'"]',  # Variables SQL
+        r'\([\'"](?:\s*SELECT|INSERT|UPDATE|DELETE).+?[\'"]\)'    # Funciones con SQL
+    ]
+    
+    for pattern in sql_patterns:
+        sql_matches = re.finditer(pattern, code_sin_comentarios, re.DOTALL | re.IGNORECASE)
+        for sql_match in sql_matches:
+            sql = sql_match.group(0)
+            
+            # 1. Detectar tablas en cláusulas FROM con múltiples tablas separadas por comas
+            from_pattern = r'\bFROM\s+(.+?)(?:\s+WHERE|\s+ORDER|\s+GROUP|\s+HAVING|\s+$)'
+            from_matches = re.finditer(from_pattern, sql, re.IGNORECASE | re.DOTALL)
+            
+            for from_match in from_matches:
+                tables_clause = from_match.group(1).strip()
+                # Dividir por coma para capturar múltiples tablas en FROM
+                for table_expr in tables_clause.split(','):
+                    table_expr = table_expr.strip()
+                    if table_expr:
+                        # Extraer nombre de tabla de "tabla alias" o "tabla AS alias"
+                        parts = re.split(r'\s+(?:as\s+)?', table_expr, 1, re.IGNORECASE)
+                        if parts:
+                            tables.add(parts[0].strip())
+    
+    # 2. Detectar tablas en otras cláusulas comunes
+    table_patterns = [
+        r'\bJOIN\s+([a-zA-Z_][a-zA-Z0-9_]*)',  # JOIN
+        r'\bUPDATE\s+([a-zA-Z_][a-zA-Z0-9_]*)', # UPDATE
+        r'\bINSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)', # INSERT
+        r'\bCREATE\s+TABLE\s+([a-zA-Z_][a-zA-Z0-9_]*)' # CREATE TABLE
+    ]
+    
+    for pattern in table_patterns:
+        for match in re.finditer(pattern, code_sin_comentarios, re.IGNORECASE):
+            table = match.group(1)
+            if table:
                 tables.add(table)
-
+    
     logging.debug(f"Detected tables: {tables}")
-
     return sorted(tables)
 
 def generate_md(file_path: Path, php_data: dict, js_data: dict, languages: set):
@@ -652,6 +706,8 @@ def process_php_file(file_path):
     libraries = set()
     tables = set()
     conectores = set()
+    all_php_functions = set()
+    all_js_functions = set()
     
     # Procesar cada bloque por lenguaje
     for lang, block in blocks:
@@ -661,12 +717,20 @@ def process_php_file(file_path):
             php_vars['globales'].update(parsed_vars['globales'])
             php_vars['locales'].update(parsed_vars['locales'])
             php_funcs.update(parse_php_functions(block))
+            all_php_functions.update(parse_php_functions(block))
             libraries.update(parse_php_libraries(block))
             tables.update(parse_php_tables(block))
             conectores.update(parse_conector_db(block))
         elif lang == 'js':
             js_vars.update(parse_js_variables(block))
             js_funcs.update(parse_js_functions(block))
+            all_js_functions.update(parse_js_functions(block))
+    
+    used_php_functions = filter_used_functions(code, all_php_functions)
+    used_js_functions = filter_used_functions(code, all_js_functions)
+    
+    php_funcs = used_php_functions
+    js_funcs = used_js_functions
     
     # Verificación adicional - buscar en todo el código para más robustez
     # Este paso busca todas las declaraciones 'global' en el código completo
@@ -677,7 +741,7 @@ def process_php_file(file_path):
     # Verificación adicional buscando en todo el código para librerías importantes
     all_libraries = parse_php_libraries(code)
     libraries.update(all_libraries)
-
+    
     # Añadir logging para verificar librerías encontradas
     logging.info(f"Librerías finales detectadas: {sorted(list(libraries))}")
     
@@ -702,5 +766,231 @@ def process_php_file(file_path):
         languages
     )
 
+# Logica de actualización de documentación haciendo uso de git
+
+def get_git_changes(file_path, num_commits=1):
+    """Obtiene los cambios recientes de un archivo usando Git."""
+    try:
+        # Obtener los cambios del último commit que afectó al archivo
+        cmd = ["git", "log", "-p", f"-{num_commits}", "--", str(file_path)]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        print(f"Error obteniendo cambios de Git: {e}")
+        return ""
+
+def parse_git_changes(git_diff):
+    """Analiza el diff de Git para extraer líneas agregadas y eliminadas."""
+    added_lines = []
+    removed_lines = []
+    
+    # Patrones para identificar líneas agregadas/eliminadas en el diff
+    for line in git_diff.split('\n'):
+        if line.startswith('+') and not line.startswith('+++'):
+            added_lines.append(line[1:])  # Elimina el '+' inicial
+        elif line.startswith('-') and not line.startswith('---'):
+            removed_lines.append(line[1:])  # Elimina el '-' inicial
+    
+    return added_lines, removed_lines
+
+def analyze_changed_elements(added_lines, removed_lines):
+    """Analiza qué elementos (funciones, variables, tablas) han cambiado."""
+    changes = {
+        'functions': {'added': set(), 'modified': set(), 'removed': set()},
+        'variables': {'added': set(), 'modified': set(), 'removed': set()},
+        'tables': {'added': set(), 'modified': set(), 'removed': set()},
+    }
+    
+    # Unir todas las líneas para analizarlas
+    added_code = '\n'.join(added_lines)
+    removed_code = '\n'.join(removed_lines)
+    
+    # Detectar funciones cambiadas
+    added_functions = parse_php_functions(added_code)
+    removed_functions = parse_php_functions(removed_code)
+    
+    changes['functions']['added'] = added_functions - removed_functions
+    changes['functions']['removed'] = removed_functions - added_functions
+    changes['functions']['modified'] = added_functions.intersection(removed_functions)
+    
+    # Detectar variables cambiadas
+    added_vars = parse_php_variables(added_code)
+    removed_vars = parse_php_variables(removed_code)
+    
+    # Para variables globales
+    changes['variables']['added'] = added_vars['globales'] - removed_vars['globales']
+    changes['variables']['removed'] = removed_vars['globales'] - added_vars['globales']
+    changes['variables']['modified'] = added_vars['globales'].intersection(removed_vars['globales'])
+    
+    # Detectar tablas cambiadas
+    added_tables = set(parse_php_tables(added_code))
+    removed_tables = set(parse_php_tables(removed_code))
+    
+    changes['tables']['added'] = added_tables - removed_tables
+    changes['tables']['removed'] = removed_tables - added_tables
+    changes['tables']['modified'] = added_tables.intersection(removed_tables)
+    
+    return changes
+
+def extract_commit_info(git_output):
+    """Extrae información del commit (autor, fecha, mensaje) del output de git."""
+    commit_info = ""
+    lines = git_output.split('\n')
+    for i, line in enumerate(lines):
+        if line.startswith('commit '):
+            commit_hash = line.split(' ')[1]
+            commit_info += f"Commit: {commit_hash}\n"
+        elif line.startswith('Author: '):
+            author = line[8:]
+            commit_info += f"Autor: {author}\n"
+        elif line.startswith('Date: '):
+            date = line[6:]
+            commit_info += f"Fecha: {date}\n"
+        elif i > 3 and line and not line.startswith('+') and not line.startswith('-') and not line.startswith(' '):
+            # Probablemente sea el mensaje del commit
+            if not line.strip().startswith('diff --git'):
+                commit_info += f"Mensaje: {line.strip()}\n"
+                break
+    
+    return commit_info
+
+def update_md_with_changes(md_file_path, changes, commit_info=""):
+    """Actualiza el archivo MD existente con los cambios recientes."""
+    try:
+        with open(md_file_path, 'r', encoding='utf-8') as f:
+            md_content = f.read()
+        
+        # Obtener la fecha actual
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        
+        # Crear sección de cambios recientes
+        changes_section = f"\n\n## Cambios Recientes ({current_date})\n\n"
+        
+        if commit_info:
+            changes_section += f"### Commit Info\n{commit_info}\n\n"
+        
+        # Agregar funciones cambiadas
+        if any(changes['functions'].values()):
+            changes_section += "### Funciones\n"
+            if changes['functions']['added']:
+                changes_section += "#### Agregadas\n"
+                for func in changes['functions']['added']:
+                    changes_section += f"* `{func}()`\n"
+            if changes['functions']['modified']:
+                changes_section += "#### Modificadas\n"
+                for func in changes['functions']['modified']:
+                    changes_section += f"* `{func}()`\n"
+            if changes['functions']['removed']:
+                changes_section += "#### Eliminadas\n"
+                for func in changes['functions']['removed']:
+                    changes_section += f"* `{func}()`\n"
+        
+        # Agregar variables cambiadas
+        if any(changes['variables'].values()):
+            changes_section += "\n### Variables Globales\n"
+            if changes['variables']['added']:
+                changes_section += "#### Agregadas\n"
+                for var in changes['variables']['added']:
+                    changes_section += f"* `${var}`\n"
+            if changes['variables']['modified']:
+                changes_section += "#### Modificadas\n"
+                for var in changes['variables']['modified']:
+                    changes_section += f"* `${var}`\n"
+            if changes['variables']['removed']:
+                changes_section += "#### Eliminadas\n"
+                for var in changes['variables']['removed']:
+                    changes_section += f"* `${var}`\n"
+        
+        # Agregar tablas cambiadas
+        if any(changes['tables'].values()):
+            changes_section += "\n### Tablas\n"
+            if changes['tables']['added']:
+                changes_section += "#### Agregadas\n"
+                for table in changes['tables']['added']:
+                    changes_section += f"* `{table}`\n"
+            if changes['tables']['modified']:
+                changes_section += "#### Modificadas\n"
+                for table in changes['tables']['modified']:
+                    changes_section += f"* `{table}`\n"
+            if changes['tables']['removed']:
+                changes_section += "#### Eliminadas\n"
+                for table in changes['tables']['removed']:
+                    changes_section += f"* `{table}`\n"
+        
+        # Verificar si ya existe una sección de cambios recientes
+        if "## Cambios Recientes" in md_content:
+            # Reemplazar la sección existente
+            md_content = re.sub(r"## Cambios Recientes.*?(?=##|\Z)", changes_section, md_content, flags=re.DOTALL)
+        else:
+            # Agregar la nueva sección antes de la última sección (normalmente "NOTA:")
+            last_section_match = re.search(r"### \*\*NOTA:\*\*", md_content)
+            if last_section_match:
+                insert_position = last_section_match.start()
+                md_content = md_content[:insert_position] + changes_section + md_content[insert_position:]
+            else:
+                # Si no hay sección "NOTA:", añadir al final
+                md_content += changes_section
+        
+        # Guardar el archivo actualizado
+        with open(md_file_path, 'w', encoding='utf-8') as f:
+            f.write(md_content)
+        
+        print(f"Archivo MD actualizado con los cambios recientes: {md_file_path}")
+        
+    except Exception as e:
+        print(f"Error actualizando el archivo MD: {e}")
+
+def document_recent_changes(file_path, num_commits=1):
+    """Documenta los cambios recientes en un archivo PHP."""
+    file_path = Path(file_path)
+    
+    # Verificar que el archivo exista
+    if not file_path.exists():
+        print(f"Error: El archivo {file_path} no existe.")
+        return
+    
+    # Obtener cambios de Git
+    git_output = get_git_changes(file_path, num_commits)
+    if not git_output:
+        print(f"No se encontraron cambios recientes para {file_path}")
+        return
+    
+    # Extraer información del commit
+    commit_info = extract_commit_info(git_output)
+    
+    # Extraer y analizar cambios
+    added_lines, removed_lines = parse_git_changes(git_output)
+    changes = analyze_changed_elements(added_lines, removed_lines)
+    
+    # Ruta al archivo MD
+    md_file_path = Path("docs") / file_path.with_suffix('.md').name
+    
+    # Verificar si el archivo MD existe, si no, crearlo primero
+    if not md_file_path.exists():
+        print(f"El archivo MD no existe. Generando documentación completa primero...")
+        process_php_file(file_path)
+    
+    # Actualizar el archivo MD con los cambios
+    update_md_with_changes(md_file_path, changes, commit_info)
+
 # Ejecutar el script
-process_php_file(Path("files/datos.php"))
+# process_php_file(Path("files/reporte_app_consuertepay.php"))
+# Para poder ejecutar como script independiente
+if __name__ == "__main__":
+    import sys
+    
+    if len(sys.argv) < 2:
+        print("Uso: python docu_php.py <archivo_php> [cambios] [num_commits]")
+        sys.exit(1)
+    
+    file_path = sys.argv[1]
+    
+    # Si se especifica "cambios", documentar solo los cambios recientes
+    if len(sys.argv) > 2 and sys.argv[2] == "cambios":
+        num_commits = 1
+        if len(sys.argv) > 3 and sys.argv[3].isdigit():
+            num_commits = int(sys.argv[3])
+        document_recent_changes(file_path, num_commits)
+    else:
+        # Documentar todo el archivo
+        process_php_file(Path(file_path))

@@ -1,0 +1,8 @@
+# Documentación completa
+python docu_php.py archivo.php
+
+# Documentar solo cambios del último commit
+python docu_php.py archivo.php cambios
+
+# Documentar cambios de los últimos N commits
+python docu_php.py archivo.php cambios 3
