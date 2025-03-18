@@ -4,6 +4,8 @@ Este archivo exporta todas las funciones de análisis disponibles
 """
 
 # Parsers PHP
-from .php_parser import PHPParser
+from documentador.parsers.php_parser import PHPParser
+from documentador.parsers.js_parser import JSParser
+from documentador.parsers.sql_parser import SQLParser
 
-__all__ = ['PHPParser']
+__all__ = ['PHPParser', 'JSParser', 'SQLParser']

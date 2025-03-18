@@ -7,5 +7,7 @@ setup(
     install_requires=[
         'pathlib',
         'typing',
-    ]
+        'chardet'
+    ],
+    python_requires='>=3.8',
 )

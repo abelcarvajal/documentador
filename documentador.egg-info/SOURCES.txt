@@ -9,10 +9,14 @@ documentador.egg-info/top_level.txt
 git/__init__.py
 git/git_utils.py
 parsers/__init__.py
+parsers/base_parser.py
 parsers/js_parser.py
+parsers/language_detector.py
 parsers/php_parser.py
 parsers/sql_parser.py
+parsers/variable_parser.py
 utils/__init__.py
 utils/debug.py
 utils/encoding.py
+utils/events.py
 utils/text.py
