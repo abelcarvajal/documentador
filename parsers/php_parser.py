@@ -14,10 +14,32 @@ from documentador.utils.events import event_system
 logger = logging.getLogger(__name__)
 
 class PHPParser:
-    def __init__(self, file_path: Path = None):
+    def __init__(self, file_path: str = None):
+        """Inicializa el parser PHP"""
+        self.logger = logging.getLogger(__name__)
         self.file_path = file_path
-        self.content = None
-        self.raw_content = None
+        self.content = ''
+        
+        if file_path:
+            # Lista de codificaciones a probar
+            encodings = ['windows-1252', 'latin-1', 'utf-8', 'ISO-8859-1']
+            
+            for encoding in encodings:
+                try:
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        self.content = f.read()
+                    self.logger.info(f"Archivo leído correctamente usando codificación: {encoding}")
+                    break
+                except UnicodeDecodeError:
+                    continue
+                except Exception as e:
+                    self.logger.error(f"Error leyendo archivo {file_path}: {str(e)}")
+                    raise
+
+            if not self.content:
+                self.logger.error(f"No se pudo leer el archivo con ninguna codificación")
+                raise ValueError("No se pudo leer el archivo correctamente")
+
         self.services = set()
         self.libraries = set()
         self.encodings = config.get('parsers.encoding', ['utf-8', 'latin-1'])
@@ -64,64 +86,26 @@ class PHPParser:
         
         return code
 
-    def _extract_services(self) -> List[str]:
-        """Extrae los servicios inyectados en el controlador"""
-        patterns = [
-            r'public\s+function\s+__construct\s*\((.*?)\)',  # Constructor injection
-            r'#\[Autowire\]\s*(?:private|protected|public)\s+(\w+)\s+\$\w+',  # Property injection
-            r'private\s+(\w+)\s+\$\w+;'  # Service property
-        ]
+    def _extract_libraries(self) -> List[str]:
+        """Extrae librerías excluyendo servicios"""
+        libraries = set()
         
-        services = set()
+        # Patrón para detectar use statements
+        pattern = r'use\s+([\w\\]+)(?:\s+as\s+[\w\\]+)?;'
         
-        for pattern in patterns:
-            matches = re.finditer(pattern, self.content, re.DOTALL)
-            for match in matches:
-                service_type = match.group(1)
-                if service_type and not service_type.startswith(('int', 'string', 'bool', 'array', 'float')):
-                    services.add(service_type)
-                    logger.debug(f"Servicio encontrado: {service_type}")
+        matches = re.finditer(pattern, self.content)
+        for match in matches:
+            lib = match.group(1).strip()
+            # Excluir servicios
+            if (
+                lib and 
+                not 'Services' in lib and
+                not any(service in lib for service in ['Log', 'Conexion', 'ConsultaParametro', 'HttpClient', 'Herramientas'])
+            ):
+                libraries.add(lib)
+                self.logger.debug(f"Librería encontrada: {lib}")
         
-        return sorted(list(services))
-
-    def _extract_libraries(self) -> Set[str]:
-        """Extrae las librerías del código PHP."""
-        if not self.content:
-            return set()
-
-        # Patrones para detectar librerías
-        patterns = [
-            r'use\s+([^;]+);',  # Namespaces/use statements
-            r'require(?:_once)?\s*\(\s*[\'"]([^\'"]+)[\'"]',  # require/require_once
-            r'include(?:_once)?\s*\(\s*[\'"]([^\'"]+)[\'"]',  # include/include_once
-            r'<script\s+[^>]*?src=[\'"](.*?)[\'"]',  # JS scripts
-            r'<link[^>]*?href=[\'"](.*?)[\'"]'  # CSS links
-        ]
-
-        for pattern in patterns:
-            matches = re.finditer(pattern, self.content)
-            for match in matches:
-                lib = match.group(1).strip()
-                if self._validate_library(lib):
-                    self.libraries.add(lib)
-                    logging.debug(f"Librería detectada: {lib}")
-
-        return self.libraries
-
-    def _validate_library(self, lib: str) -> bool:
-        """Valida si una librería debe ser incluida."""
-        if not lib or len(lib) < 3:
-            return False
-
-        # Validar namespaces comunes
-        if lib.startswith(('Symfony\\', 'App\\', 'PhpOffice\\')):
-            return True
-
-        # Validar extensiones de archivo
-        if lib.endswith(('.php', '.js', '.css')):
-            return True
-
-        return False
+        return sorted(libraries)
 
     def _extract_sql_queries(self, content: str) -> Set[str]:
         """Extrae consultas SQL del código PHP"""
@@ -156,61 +140,111 @@ class PHPParser:
             
         return tables
 
-    def parse(self):
-        """Realiza el parsing completo del archivo."""
+    def parse(self) -> Dict[str, Any]:
+        """Analiza el archivo PHP completo"""
         try:
-            self._read_file()
+            self.logger.debug("Iniciando parseo del archivo PHP...")
             
-            # Inicializar SQLParser
-            sql_parser = SQLParser()
-            
-            # Extraer consultas SQL y tablas
-            sql_info = sql_parser.parse_sql_queries(self.content)
-            self.logger.debug(f"SQL Queries detected: {sql_info['queries']}")  # Log the detected SQL queries
-            self.logger.debug(f"Tables extracted: {sql_info['tables']}")  # Log the extracted tables
-            
-            # Verificar SQL info
-            self.logger.debug(f"SQL info recibida del parser: {sql_info}")
-            
-            # Obtener información de conexiones
-            db_info = sql_parser.extract_db_connections(self.content)
-            
-            # Obtener aliases de bases de datos
-            db_aliases = sql_parser.get_db_aliases()
-            
-            # Asegurar que tenemos las tablas
-            tables = set(sql_info.get('tables', []))
-            
-            # Log para verificación
-            if tables:
-                self.logger.info(f"Tablas SQL encontradas ({len(tables)}): {sorted(tables)}")
-            else:
-                self.logger.warning("No se encontraron tablas SQL en el archivo")
-
-            resultado = {
-                'file_name': self.file_path.name,
-                'languages': {'PHP'},
+            # Estructura base del resultado
+            result = {
+                'file_name': Path(self.file_path).name,
+                'path': str(Path(self.file_path).absolute()),  # Asegurar que path esté presente
+                'ticket': '#',
+                'fecha': datetime.now().strftime('%Y-%m-%d'),
+                'author': 'José Abel Carvajal',
+                'description': '',  # Campo vacío para descripción
+                'language': 'PHP',
+                'doc_md': Path(self.file_path).with_suffix('.md').name,
+                'variables': {
+                    'globals': self._extract_global_variables(),
+                    'locals': self._extract_local_variables()
+                },
+                'tables': [],
+                'queries': [],
+                'connections': self._extract_db_connections(),
+                'functions': self._extract_functions(),
+                'routes': self._extract_routes(),
                 'libraries': self._extract_libraries(),
                 'services': self._extract_services(),
-                'variables': {
-                    'globales': self._extract_global_variables(),
-                    'locales': self._extract_local_variables()
-                },
-                'functions': self._extract_functions(),
-                'sql_info': {
-                    'tables': sorted(list(tables)),
-                    'conectores': sorted(list(db_info.get('conectores', set()))),
-                    'databases': sorted(list(set(db_info.get('databases', set())) | set(db_aliases.keys())))
-                }
+                'databases': []
             }
             
-            # Log final para verificar que las tablas están en el resultado
-            self.logger.debug(f"Tablas en resultado final: {resultado['sql_info']['tables']}")
+            # Analizar SQL usando SQLParser
+            sql_info = self.sql_parser.parse_sql_queries(self.content)
             
-            return resultado
+            # Procesar tablas encontradas 
+            all_tables = set()
+            for query in sql_info.get('queries', []):
+                if query and isinstance(query, dict):
+                    tables = query.get('tables', [])
+                    if tables:
+                        all_tables.update(tables)
+                        result['queries'].append(query.get('query', ''))
+
+            result['tables'] = sorted(list(all_tables))
+            
+            self.logger.debug(f"Resultado final del parseo: {result}")
+            return result
+
         except Exception as e:
             self.logger.error(f"Error en parse: {str(e)}")
             raise
+
+    def _extract_methods(self) -> List[str]:
+        """Extrae métodos de clase"""
+        methods = []
+        patterns = [
+            r'(?:public|private|protected)\s+function\s+(\w+)\s*\([^)]*\)',
+            r'function\s+(\w+)\s*\([^)]*\)'
+        ]
+        
+        for pattern in patterns:
+            matches = re.finditer(pattern, self.content)
+            methods.extend(match.group(1) for match in matches)
+        
+        return sorted(set(methods))
+
+    def _extract_namespaces(self) -> List[str]:
+        """Extrae namespaces y uses"""
+        namespaces = []
+        patterns = [
+            r'namespace\s+([\w\\]+)',
+            r'use\s+([\w\\]+)(?:\s+as\s+[\w\\]+)?;'
+        ]
+        
+        for pattern in patterns:
+            matches = re.finditer(pattern, self.content)
+            namespaces.extend(match.group(1) for match in matches)
+        
+        return sorted(set(namespaces))
+
+    def _extract_additional_info(self) -> Dict[str, Any]:
+        """Extrae información adicional del archivo"""
+        info = {
+            'annotations': [],
+            'dependencies': [],
+            'constants': [],
+            'interfaces': []
+        }
+        
+        # Buscar anotaciones
+        annotations = re.finditer(r'@(\w+)(?:\([^)]+\))?', self.content)
+        info['annotations'].extend(match.group(1) for match in annotations)
+        
+        # Buscar dependencias
+        dependencies = re.finditer(r'(?:require|include)(?:_once)?\s*[\'"]([^\'"]+)[\'"]', self.content)
+        info['dependencies'].extend(match.group(1) for match in dependencies)
+        
+        # Buscar constantes
+        constants = re.finditer(r'const\s+(\w+)\s*=', self.content)
+        info['constants'].extend(match.group(1) for match in constants)
+        
+        # Buscar interfaces
+        interfaces = re.finditer(r'implements\s+([\w,\s\\]+)', self.content)
+        for match in interfaces:
+            info['interfaces'].extend(i.strip() for i in match.group(1).split(','))
+        
+        return {k: sorted(set(v)) for k, v in info.items()}
 
     def parse_libraries(self, code: str) -> Set[str]:
         """Identifica todas las librerías incluidas en el código PHP."""
@@ -282,29 +316,19 @@ class PHPParser:
         matches = re.finditer(pattern, self.content)
         return {match.group(1) for match in matches}
 
-    def _extract_functions(self) -> Set[str]:
-        """Extrae las funciones del código PHP."""
-        if not self.content:
-            return set()
-        
-        functions = set()
-        
-        # Patrones para detectar funciones
+    def _extract_functions(self) -> List[str]:
+        """Extrae funciones PHP definidas en el código"""
+        functions = []
         patterns = [
-            # Métodos de clase
-            r'(?:public|private|protected)?\s*function\s+(\w+)\s*\(',
-            # Funciones globales
             r'function\s+(\w+)\s*\(',
-            # Constructor
-            r'function\s+__construct\s*\(',
+            r'public\s+function\s+(\w+)\s*\(',
+            r'private\s+function\s+(\w+)\s*\(',
+            r'protected\s+function\s+(\w+)\s*\('
         ]
         
         for pattern in patterns:
             matches = re.finditer(pattern, self.content)
-            for match in matches:
-                function_name = match.group(1) if len(match.groups()) > 0 else '__construct'
-                functions.add(function_name)
-                logger.debug(f"Función encontrada: {function_name}")
+            functions.extend(match.group(1) for match in matches)
         
         return sorted(functions)
 
@@ -340,6 +364,262 @@ class PHPParser:
                 conectores.add(pattern.split(r'\s')[0])
         
         return conectores
+
+    def parse_file(self, file_path: str) -> Dict[str, Any]:
+        """Parsea un archivo PHP y extrae su información."""
+        data = {
+            'file_name': Path(file_path).name,
+            'path': str(Path(file_path).absolute()),  # Aseguramos que se guarde la ruta completa
+        }
+        try:
+            # Convertir el path a Path object si es string
+            self.file_path = Path(file_path) if isinstance(file_path, str) else file_path
+            
+            # Cargar el archivo
+            if not self._load_file():
+                raise ValueError(f"No se pudo cargar el archivo: {file_path}")
+
+            # Realizar el parsing
+            data.update({
+                'languages': {'PHP'},  # Por ahora solo PHP
+                'libraries': self._extract_libraries(),
+                'services': self._extract_services(),
+                'variables': {
+                    'globales': self._extract_global_variables(),
+                    'locales': self._extract_local_variables()
+                },
+                'functions': self._extract_functions()
+            })
+
+            # Extraer información SQL
+            sql_info = self.sql_parser.parse_sql_queries(self.content)
+            data['sql_info'] = sql_info
+
+            # Agregar información de conexiones a base de datos
+            db_connections = self.sql_parser.extract_db_connections(self.content)
+            data['sql_info']['conectores'] = db_connections.get('conectores', set())
+            data['sql_info']['databases'] = db_connections.get('databases', set())
+
+            self.logger.info(f"Parsing completado para {self.file_path}")
+            return data
+
+        except Exception as e:
+            self.logger.error(f"Error en parse_file: {str(e)}")
+            raise
+
+    def _extract_routes(self) -> List[str]:
+        """Extrae rutas definidas en el código"""
+        routes = []
+        patterns = [
+            r'@Route\(["\']([^"\']+)["\']',
+            r'->add\(["\']([^"\']+)["\']',
+            r'path=["\']([^"\']+)["\']'
+        ]
+        
+        for pattern in patterns:
+            matches = re.finditer(pattern, self.content)
+            routes.extend(match.group(1) for match in matches)
+        
+        return sorted(routes)
+
+    def _extract_routes(self) -> List[Dict[str, str]]:
+        """Extrae las rutas definidas en el controlador."""
+        routes = []
+        
+        # Patrones para detectar rutas de Symfony
+        patterns = [
+            # Formato de anotación
+            r'@Route\s*\(\s*["\']([^"\']+)["\']\s*,\s*name\s*=\s*["\']([^"\']+)["\']\s*(?:,\s*methods\s*=\s*{([^}]+)})?\s*\)\s*(?:public\s+)?function\s+(\w+)',
+            
+            # Formato de atributos (PHP 8+)
+            r'#\[Route\s*\(\s*["\']([^"\']+)["\']\s*,\s*name:\s*["\']([^"\']+)["\']\s*(?:,\s*methods:\s*\[([^\]]+)\])?\s*\)\]\s*(?:public\s+)?function\s+(\w+)'
+        ]
+        
+        for pattern in patterns:
+            matches = re.finditer(pattern, self.content, re.DOTALL)
+            for match in matches:
+                path = match.group(1)
+                name = match.group(2)
+                methods = match.group(3) if match.group(3) else "GET"
+                function = match.group(4)
+                
+                # Limpiar los métodos HTTP
+                methods = [m.strip(' "\'[]{}') for m in methods.split(',')]
+                
+                routes.append({
+                    'name': name,
+                    'path': path,
+                    'controller': f"{self.__class__.__name__}::{function}",
+                    'methods': methods
+                })
+                
+                self.logger.debug(f"Ruta encontrada: {path} -> {function}")
+        
+        return routes
+
+    def _extract_services(self) -> List[str]:
+        """Extrae servicios del código PHP usando múltiples estrategias de detección"""
+        services = set()
+        
+        # 1. Buscar servicios en declaraciones 'use'
+        use_pattern = r'use\s+([\w\\]+)(?:\s+as\s+[\w\\]+)?;'
+        for match in re.finditer(use_pattern, self.content):
+            lib = match.group(1).strip()
+            if lib and (
+                'Services' in lib or
+                any(service in lib for service in ['Log', 'Conexion', 'ConsultaParametro', 'HttpClient', 'Herramientas'])
+            ):
+                services.add(lib)
+                self.logger.debug(f"Servicio encontrado (use statement): {lib}")
+        
+        # 2. Buscar servicios inyectados con anotación @inject
+        inject_pattern = r'@inject\s*\(["\']([^"\']+)["\']'
+        for match in re.finditer(inject_pattern, self.content):
+            service = match.group(1).strip()
+            if service:
+                services.add(service)
+                self.logger.debug(f"Servicio encontrado (anotación @inject): {service}")
+        
+        # 3. Buscar servicios inyectados en constructores (patrón común en frameworks modernos)
+        constructor_pattern = r'(?:public|protected)\s+function\s+__construct\s*\((.*?)\)'
+        for match in re.finditer(constructor_pattern, self.content, re.DOTALL):
+            constructor_params = match.group(1)
+            
+            # Buscar parámetros con tipado que indiquen servicios
+            param_pattern = r'([\w\\]+)(?:Interface)?\s+\$(\w+)'
+            for param_match in re.finditer(param_pattern, constructor_params):
+                type_hint = param_match.group(1)
+                
+                # Si el tipo tiene formato de servicio, agregarlo
+                if (
+                    'Service' in type_hint or 
+                    'Repository' in type_hint or
+                    'Manager' in type_hint or
+                    'Helper' in type_hint
+                ):
+                    services.add(type_hint)
+                    self.logger.debug(f"Servicio encontrado (constructor injection): {type_hint}")
+        
+        # 4. Buscar servicios de contenedor (patrón común en Symfony/Laravel)
+        container_pattern = r'(?:->|::)get\s*\(\s*["\'](\w+(?:\.?\w+)*)["\']'
+        for match in re.finditer(container_pattern, self.content):
+            service_id = match.group(1).strip()
+            if service_id and '.' in service_id:  # service_id con formato dominio.servicio
+                services.add(f"container:{service_id}")
+                self.logger.debug(f"Servicio encontrado (container): {service_id}")
+        
+        return sorted(services)
+
+    def _extract_global_variables(self) -> List[str]:
+        """Extrae variables globales"""
+        globals = []
+        pattern = r'global\s+(\$\w+)'
+        
+        matches = re.finditer(pattern, self.content)
+        globals.extend(match.group(1) for match in matches)
+        
+        return sorted(globals)
+
+    def _extract_local_variables(self) -> List[str]:
+        """Extrae variables locales importantes"""
+        locals = []
+        patterns = [
+            r'private\s+\$(\w+)',
+            r'protected\s+\$(\w+)',
+            r'public\s+\$(\w+)'
+        ]
+        
+        for pattern in patterns:
+            matches = re.finditer(pattern, self.content)
+            locals.extend(match.group(1) for match in matches)
+        
+        return sorted(locals)
+
+    def _detect_language_version(self) -> str:
+        """Detecta la versión de PHP utilizada"""
+        version = "PHP"
+        pattern = r'declare\(strict_types=1\)'
+        
+        if re.search(pattern, self.content):
+            version += " 7+"
+        
+        return version
+
+    def _extract_db_connections(self) -> Dict[str, Set[str]]:
+        """Extrae información de conexiones a bases de datos."""
+        connections = {
+            'conectores': set(),
+            'databases': set()
+        }
+
+        # Patrones para detectar conexiones
+        patterns = [
+            # Conexión mediante cnn->query
+            r'\$(?:this->)?cnn->query\s*\(\s*[\'\"](\d+)[\'\"](.*?)\)',
+            
+            # Conexión directa PDO
+            r'new\s+PDO\s*\(\s*[\'"](.*?)[\'"]\s*,',
+            
+            # Conexiones Doctrine
+            r'getManager\(\s*[\'"](.*?)[\'"]\s*\)',
+            r'getRepository\(\s*[\'"](.*?)[\'"]\s*\)',
+            
+            # Conexiones mediante parámetros
+            r'->setParameter\(\s*[\'"](.*?)[\'"]\s*,',
+            
+            # Conexiones en configuración
+            r'database_host:\s*[\'"](.*?)[\'"]\s*',
+            r'database_name:\s*[\'"](.*?)[\'"]\s*'
+        ]
+
+        try:
+            # Procesar cada patrón
+            for pattern in patterns:
+                matches = re.finditer(pattern, self.content, re.IGNORECASE | re.MULTILINE)
+                for match in matches:
+                    connection_id = match.group(1)
+                    
+                    # Agregar el conector encontrado
+                    if connection_id.isdigit():
+                        connections['conectores'].add(f"cnn->query('{connection_id}')")
+                        
+                        # Obtener nombre de base de datos si existe en configuración
+                        if hasattr(self, 'sql_parser'):
+                            db_name = self.sql_parser.get_db_name(connection_id)
+                            if db_name:
+                                connections['databases'].add(db_name)
+                    else:
+                        # Para otros tipos de conexión
+                        connections['conectores'].add(connection_id)
+
+        except Exception as e:
+            self.logger.error(f"Error extrayendo conexiones: {str(e)}")
+
+        return connections
+
+    def get_db_name(self, connection_id: str) -> str:
+        """Obtiene el nombre de la base de datos para un ID de conexión."""
+        try:
+            # Buscar en el archivo de configuración
+            conexiones_path = Path(__file__).parent.parent / 'plantillas' / 'conexiones_symfony.md'
+            if not conexiones_path.exists():
+                self.logger.warning(f"Archivo de conexiones no encontrado: {conexiones_path}")
+                return ""
+
+            with open(conexiones_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+            # Buscar la conexión por ID
+            pattern = rf'\*\s+{connection_id}:\s+`([^`]+)`\s*->\s*([^\n]+)'
+            match = re.search(pattern, content)
+            
+            if match:
+                return match.group(2).strip()
+                
+        except Exception as e:
+            self.logger.error(f"Error obteniendo nombre de BD: {str(e)}")
+            
+        return ""
 
 logging.basicConfig(level=logging.DEBUG, format='%(message)s')
 
@@ -662,7 +942,7 @@ def parse_php_functions(code):
     # Patrones mejorados para detectar funciones
     patterns = [
         # Funciones normales
-        r'function\s+(\w+)\s*\([^)]*\)',
+        r'function\s+(\w+)\s*\(',
         # Métodos de clase con diferentes combinaciones de modificadores
         r'(?:public|private|protected|static|abstract|final)(?:\s+(?:public|private|protected|static|abstract|final))*\s+function\s+(\w+)\s*\([^)]*\)',
         # Funciones con referencia

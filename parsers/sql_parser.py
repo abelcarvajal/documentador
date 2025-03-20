@@ -23,80 +23,50 @@ class SQLParser:
 
     def _clean_query(self, query: str) -> str:
         """Limpia y normaliza una consulta SQL"""
-        # Remover comentarios
+        if not query:
+            return ""
+        
+        # Eliminar comentarios
         query = re.sub(r'--.*$', '', query, flags=re.MULTILINE)
         query = re.sub(r'/\*.*?\*/', '', query, flags=re.DOTALL)
         
-        # Remover funciones de agregación
-        query = re.sub(r'(SUM|COUNT|AVG|MIN|MAX)\s*\([^)]+\)', '', query)
+        # Eliminar contenido entre paréntesis
+        query = re.sub(r'\([^)]*\)', '', query)
         
-        # Remover CASE statements
-        query = re.sub(r'CASE\s+WHEN.*?END', '', query, flags=re.DOTALL)
+        # Eliminar cadenas literales
+        query = re.sub(r"'[^']*'", '', query)
+        query = re.sub(r'"[^"]*"', '', query)
         
-        return query.upper()
+        return query.strip()
 
     def extract_tables(self, query: str) -> Set[str]:
-        """Extrae nombres de tablas de una consulta SQL"""
+        """Extrae nombres de tablas de una consulta SQL."""
         tables = set()
-        if not query:
+        if not query or not isinstance(query, str):
             return tables
-            
-        # Lista de alias comunes o nombres cortos que deben ser ignorados
-        alias_blacklist = {
-            'c3', 't1', 't2', 't3', 'a', 'b', 'c', 'd', 'tmp', 'temp',
-            'aux', 'det', 'cab', 'src', 'dst', 'old', 'new'
-        }
         
-        # Limpiar la consulta primero
-        query = self._clean_query(query)
-        
-        # Patrones mejorados para tablas
+        # Patrones para tablas
         table_patterns = [
-            # Patrón básico FROM/JOIN/INTO/UPDATE
-            r'(?:FROM|JOIN|UPDATE|INTO)\s+([A-Za-z0-9_\.]+)',
-            
-            # Patrón con alias opcional
-            r'(?:FROM|JOIN|UPDATE|INTO)\s+([A-Za-z0-9_\.]+)(?:\s+(?:AS\s+)?\w+)?',
-            
-            # Patrón para subconsultas
-            r'FROM\s+\((SELECT.*?FROM\s+([A-Za-z0-9_\.]+))\s*\)',
-            
-            # Patrón para INNER/LEFT/RIGHT JOIN
-            r'(?:INNER|LEFT|RIGHT|OUTER)?\s*JOIN\s+([A-Za-z0-9_\.]+)',
-            
-            # Patrón para INSERT INTO
-            r'INSERT\s+INTO\s+([A-Za-z0-9_\.]+)',
-            
-            # Patrón para DELETE FROM
-            r'DELETE\s+FROM\s+([A-Za-z0-9_\.]+)',
-            
-            # Patrón para capturas de tablas en WHERE
-            r'WHERE\s+([A-Za-z0-9_\.]+)\.', 
-            
-            # Patrón para tablas en subconsultas
-            r'\(\s*SELECT\s+.*?\s+FROM\s+([A-Za-z0-9_\.]+)'
+            r'(?:FROM|JOIN)\s+(?:(?:[A-Za-z0-9_]+\.)?([A-Za-z][A-Za-z0-9_]*(?:_[A-Za-z0-9_]+)*))',
+            r'(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(?:(?:[A-Za-z0-9_]+\.)?([A-Za-z][A-Za-z0-9_]*(?:_[A-Za-z0-9_]+)*))',
+            r'\(\s*SELECT\s+.*?FROM\s+(?:(?:[A-Za-z0-9_]+\.)?([A-Za-z][A-Za-z0-9_]*(?:_[A-Za-z0-9_]+)*))',
+            r'USING\s+(?:(?:[A-Za-z0-9_]+\.)?([A-Za-z][A-Za-z0-9_]*(?:_[A-Za-z0-9_]+)*))'
         ]
-
-        for pattern in table_patterns:
-            matches = re.finditer(pattern, query, re.IGNORECASE | re.DOTALL)
-            for match in matches:
-                table_name = match.group(1).strip('`"\' ')
-                
-                # Manejar nombres con esquema
-                if '.' in table_name:
-                    schema, table = table_name.split('.')
-                    table_name = table
+        
+        try:
+            # Procesar cada patrón
+            for pattern in table_patterns:
+                matches = re.finditer(pattern, query, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+                for match in matches:
+                    table_name = match.group(1).strip('`"\' ')
                     
-                if (
-                    table_name.upper() not in self.sql_keywords and
-                    table_name.lower() not in alias_blacklist and  # Nueva validación
-                    len(table_name) > 2 and  # Aumentado el mínimo de caracteres
-                    not table_name.isdigit() and
-                    not table_name.startswith('(') and
-                    not re.match(r'^[a-z][0-9]$', table_name.lower())  # Evitar patrones como c3
-                ):
-                    tables.add(table_name.lower())
-                    
+                    # Validación básica
+                    if self._is_valid_table_name(table_name):
+                        tables.add(table_name.lower())
+                        
+        except Exception as e:
+            self.logger.error(f"Error extrayendo tablas: {str(e)}")
+        
         return tables
 
     def extract_db_connections(self, code: str) -> Dict[str, Set[str]]:
@@ -148,94 +118,71 @@ class SQLParser:
     def parse_sql_queries(self, code: str) -> Dict[str, Any]:
         """Detecta y analiza todas las consultas SQL en el código."""
         queries = []
-        all_tables = set()
         
-        # Patrones mejorados para encontrar asignaciones SQL
+        # Asegurarnos que code sea string
+        if not isinstance(code, str):
+            self.logger.warning("Code no es string, convirtiendo...")
+            code = str(code)
+        
+        # Patrones para detectar SQL
         sql_patterns = [
-            # Patrones para variables SQL en PHP
-            r'\$sql[0-9]*\s*=\s*[\'"]([^\'"]+)[\'"]',
-            r'\$sq[0-9]*\s*=\s*[\'"]([^\'"]+)[\'"]',
-            r'\$sqmant\s*=\s*[\'"]([^\'"]+)[\'"]',
-            r'\$sq_control[_]*\s*=\s*[\'"]([^\'"]+)[\'"]',
-            r'\$sq_hist\s*=\s*[\'"]([^\'"]+)[\'"]',
-            r'\$sql_[a-z0-9_]*\s*=\s*[\'"]([^\'"]+)[\'"]',
+            # Variables SQL
+            r'\$(?:sql|sq|sqmant|sq_control|sq_hist)[0-9_]*\s*=\s*[\'"](.*?)[\'"]',
+            r'\$sql[a-z0-9_]*\s*\.=\s*[\'"](.*?)[\'"]',
             
-            # Patrones para métodos de base de datos mejorados
-            r'->query\s*\(\s*[\'"]?[^,]*[\'"]?\s*,\s*[\'"]([^\'"]+)[\'"]',
-            r'->execute\s*\(\s*[\'"]([^\'"]+)[\'"]',
-            r'->Execute\s*\(\s*[\'"]([^\'"]+)[\'"]',
-            r'->prepare\s*\(\s*[\'"]([^\'"]+)[\'"]',
+            # Métodos de base de datos
+            r'->(?:query|execute|Execute|prepare)\s*\(\s*(?:[\'"]?\d+[\'"]?\s*,\s*)?[\'"](.*?)[\'"]',
             
-            # Patrones mejorados para consultas directas
-            r'SELECT\s+.*?\s+FROM\s+([^\s;]+)',
-            r'INSERT\s+INTO\s+([^\s;]+)',
-            r'UPDATE\s+([^\s;]+)',
-            r'DELETE\s+FROM\s+([^\s;]+)',
-            r'(?:INNER|LEFT|RIGHT|OUTER)?\s*JOIN\s+([^\s;]+)',
-            
-            # Nuevos patrones para capturar más variantes
-            r'\$sq_[a-z0-9_]*\s*=\s*[\'"]([^\'"]+)[\'"]',
-            r'\$sql[a-z0-9_]*\s*\.=\s*[\'"]([^\'"]+)[\'"]',
-            r'->query\s*\(\s*[\'"]([^\'"]+)[\'"]',
-            r'->execute\s*\(\s*[\'"]([^\'"]+)[\'"]',
-            
-            # Patrones para subconsultas
-            r'\(\s*SELECT\s+.*?\s+FROM\s+([^\s;]+)\s*\)',
-            r'JOIN\s+\(\s*SELECT\s+.*?\s+FROM\s+([^\s;]+)\s*\)',
-            
-            # Patrones para UNION
-            r'UNION\s+(?:ALL\s+)?SELECT\s+.*?\s+FROM\s+([^\s;]+)',
-            
-            # Patrones para WITH
-            r'WITH\s+\w+\s+AS\s*\(\s*SELECT\s+.*?\s+FROM\s+([^\s;]+)\s*\)',
+            # Consultas multilínea
+            r'/\*.*?SELECT\s+.*?FROM.*?\*/',
+            r'//.*?SELECT\s+.*?FROM.*?$'
         ]
-        
-        sql_patterns.extend([
-            # Patrones para consultas con alias y comentarios
-            r'FROM\s+([A-Za-z0-9_\.]+)\s*(?:AS\s+[A-Za-z0-9_]+)?(?:\s*--.*)?$',
-            
-            # Patrones para consultas con schema
-            r'FROM\s+[A-Za-z0-9_]+\.([A-Za-z0-9_]+)',
-            
-            # Patrones para variables PHP concatenadas
-            r'\$sql\s*\.=\s*[\'"]FROM\s+([A-Za-z0-9_\.]+)[\'"]',
-            
-            # Patrones para consultas dentro de funciones
-            r'function\s+\w+\s*\([^)]*\)\s*{[^}]*FROM\s+([A-Za-z0-9_\.]+)',
-            
-            # Patrones para consultas en comentarios
-            r'/\*.*?FROM\s+([A-Za-z0-9_\.]+).*?\*/',
-            
-            # Patrones para consultas con USING
-            r'USING\s+([A-Za-z0-9_\.]+)',
-            
-            # Patrones para consultas con INTO
-            r'INTO\s+([A-Za-z0-9_\.]+)\s+',
-        ])
-        
-        # Pre-procesar el código para manejar concatenaciones
-        code = re.sub(r'\'\s*\.\s*\$[^\']*\s*\.\s*\'', ' ', code)
-        code = re.sub(r'\s+', ' ', code)
-        
-        for pattern in sql_patterns:
-            matches = re.finditer(pattern, code, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-            for match in matches:
-                query_text = match.group(1).strip()
-                
-                # Buscar palabras clave SQL con validación mejorada
-                if re.search(r'\b(SELECT|INSERT|UPDATE|DELETE|FROM|JOIN|UNION|WITH)\b', query_text, re.IGNORECASE):
-                    tables = self.extract_tables(query_text)
-                    if tables:
-                        all_tables.update(tables)
-                        queries.append({
-                            'query': query_text,
-                            'tables': list(tables)
-                        })
 
-        return {
-            'queries': queries, 
-            'tables': sorted(list(all_tables))
+        try:
+            # Pre-procesar código
+            from documentador.utils.text import clean_whitespace, remove_comments
+            code = clean_whitespace(code)
+            
+            # Procesar cada patrón
+            for pattern in sql_patterns:
+                try:
+                    matches = re.finditer(pattern, code, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+                    for match in matches:
+                        # Obtener la consulta
+                        query_text = match.group(1) if match.groups() else match.group(0)
+                        query_text = query_text.strip()
+                        
+                        # Verificar si es una consulta SQL válida
+                        if re.search(r'\b(SELECT|INSERT|UPDATE|DELETE|FROM|JOIN)\b', query_text, re.IGNORECASE):
+                            # Extraer tablas directamente
+                            tables = self.extract_tables(query_text)
+                            
+                            queries.append({
+                                'query': query_text,
+                                'tables': list(tables)
+                            })
+                except Exception as e:
+                    self.logger.error(f"Error procesando patrón {pattern}: {str(e)}")
+                    continue
+                    
+        except Exception as e:
+            self.logger.error(f"Error en parse_sql_queries: {str(e)}")
+            return {'queries': []}
+
+        return {'queries': queries}
+
+    def _is_valid_table_name(self, name: str) -> bool:
+        """Valida si un nombre es una tabla válida."""
+        non_tables = {
+            'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NULL', 'AS', 'IN', 
+            'EXISTS', 'VALUES', 'TABLE', 'TEMP', 'TMP'
         }
+        return (
+            name.upper() not in non_tables and
+            len(name) > 2 and
+            not name.isdigit() and
+            not name.startswith('(')
+        )
 
     def get_query_context(code, position, context_lines=1):
         """
@@ -322,3 +269,35 @@ class SQLParser:
         }
         
         return changes
+
+    def get_db_name(self, connection_id: str) -> str:
+        """
+        Obtiene el nombre de la base de datos para un ID de conexión.
+        
+        Args:
+            connection_id (str): ID de la conexión
+            
+        Returns:
+            str: Nombre de la base de datos o cadena vacía si no se encuentra
+        """
+        try:
+            # Buscar en el archivo de configuración
+            conexiones_path = Path(__file__).parent.parent / 'plantillas' / 'conexiones_symfony.md'
+            if not conexiones_path.exists():
+                self.logger.warning(f"Archivo de conexiones no encontrado: {conexiones_path}")
+                return ""
+
+            with open(conexiones_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+            # Buscar la conexión por ID
+            pattern = rf'\*\s+{connection_id}:\s+`([^`]+)`\s*->\s*([^\n]+)'
+            match = re.search(pattern, content)
+            
+            if match:
+                return match.group(2).strip()
+                
+        except Exception as e:
+            self.logger.error(f"Error obteniendo nombre de BD: {str(e)}")
+            
+        return ""

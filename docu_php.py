@@ -1,6 +1,8 @@
 from datetime import datetime
 import re
 import chardet
+import traceback
+import logging
 import argparse
 import sys
 from pathlib import Path
@@ -18,30 +20,34 @@ logger = setup_logging()
 OUTPUT_DIR = config.get('paths.output')
 logging.basicConfig(level=logging.DEBUG, format='%(message)s')
 
-def process_php_file(file_path):
-    """Procesa un archivo PHP."""
+def read_file(file_path: Path):
+    """Lee el contenido de un archivo y detecta su codificación"""
+    with open(file_path, 'rb') as f:
+        raw_data = f.read()
+    result = chardet.detect(raw_data)
+    encoding = result['encoding']
+    return raw_data.decode(encoding), encoding
+
+def process_php_file(file_path: Path) -> None:
+    """Procesa un archivo PHP y genera su documentación"""
     try:
         logger.info(f"Procesando archivo: {file_path}")
         
-        # Inicializar parser PHP
-        parser = PHPParser(Path(file_path))
+        # Instanciar parser y generador
+        parser = PHPParser(str(file_path))
+        generator = MarkdownGenerator()
         
-        # Parsear el archivo
+        # Obtener resultados del parser
         result = parser.parse()
-        
-        # Verificar tablas encontradas
-        tables = result.get('sql_info', {}).get('tables', [])
-        logger.info(f"Tablas encontradas: {tables}")
+        logger.debug(f"Resultado del parser: {result}")
         
         # Generar documentación
-        generator = MarkdownGenerator(OUTPUT_DIR)
         generator.generate(result)
         
         logger.info(f"Documentación generada exitosamente para {file_path}")
-
+        
     except Exception as e:
-        logger.error(f"Error procesando archivo: {e}")
-        import traceback
+        logger.error(f"Error procesando archivo: {str(e)}")
         logger.error(f"Detalles del error:\n{traceback.format_exc()}")
         raise
 
