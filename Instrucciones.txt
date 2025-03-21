@@ -1,8 +1,11 @@
-# Documentación completa
-python docu_php.py archivo.php
+# Documentación básica
+python -m documentador.docu_php -i documentador/archivos_testing/AppController.php
 
-# Documentar solo cambios del último commit
-python docu_php.py archivo.php cambios
+# Con verbose
+python -m documentador.docu_php -i documentador/archivos_testing/AppController.php -v
+
+# Documentar cambios recientes
+python -m documentador.docu_php -i documentador/archivos_testing/AppController.php -c
 
 # Documentar cambios de los últimos N commits
-python docu_php.py archivo.php cambios 3
+python -m documentador.docu_php -i documentador/archivos_testing/AppController.php -c -n 3
