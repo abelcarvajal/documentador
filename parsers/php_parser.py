@@ -522,17 +522,33 @@ class PHPParser:
 
     def _extract_local_variables(self) -> List[str]:
         """Extrae variables locales importantes"""
-        locals = []
+        locals = set()
         patterns = [
-            r'private\s+\$(\w+)',
-            r'protected\s+\$(\w+)',
-            r'public\s+\$(\w+)'
+            # Variables en métodos/funciones 
+            r'\$(\w+)\s*=',
+            # Parámetros de funciones
+            r'function\s+\w+\s*\((.*?)\)',
+            # Variables usadas en substr
+            r'substr\s*\(\s*\$(\w+)',
+            # Variables de control
+            r'if\s*\(\s*\$(\w+)',
+            r'foreach\s*\(\s*\$(\w+)'
         ]
         
         for pattern in patterns:
             matches = re.finditer(pattern, self.content)
-            locals.extend(match.group(1) for match in matches)
-        
+            for match in matches:
+                if pattern.endswith('\((.*?)\)'):
+                    # Procesar parámetros de funciones
+                    params = match.group(1).split(',')
+                    for param in params:
+                        if '$' in param:
+                            var_name = re.search(r'\$(\w+)', param)
+                            if var_name:
+                                locals.add(var_name.group(1))
+                else:
+                    locals.add(match.group(1))
+                
         return sorted(locals)
 
     def _detect_language_version(self) -> str:

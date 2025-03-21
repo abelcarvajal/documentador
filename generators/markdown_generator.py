@@ -36,10 +36,10 @@ class MarkdownGenerator:
 {language}
 
 ### **URL**
-* {file_name} -> [Ruta archivo: {file_name}](../../src/Controller/{file_name})
+* {file_name} -> [Ruta archivo: {file_name}]({relative_path}\{file_name})
 
 ### **URL / .md Documentación Archivos Implementados**
-* {doc_md} -> [Ruta archivo: {doc_md}](../../public/guia_programador/{doc_md})
+* {doc_md} -> [Ruta archivo: {doc_md}]({reference_path}\{doc_md})
 
 # **PHP:**
 
@@ -147,26 +147,26 @@ class MarkdownGenerator:
             
         return "\n".join(formatted)
     
-    def _format_globals(self, globals: List[str]) -> str:
+    def _format_globals(self, globals_vars: List[str]) -> str:
         """Formatea la sección de variables globales"""
-        if not globals:
+        if not globals_vars:
             return "*Sin variables globales*"
         
         # Ordenar y formatear variables globales
         formatted = []
-        for var in sorted(globals_var):
+        for var in sorted(globals_vars):
             formatted.append(f"* {var}")
         
         return "\n".join(formatted)
     
-    def _format_locals(self, locals: List[str]) -> str:
+    def _format_locals(self, locals_vars: List[str]) -> str:
         """Formatea la sección de variables locales"""
-        if not locals:
+        if not locals_vars:
             return "*Sin variables locales*"
         
         # Ordenar y formatear variables locales
         formatted = []
-        for var in sorted(locals_var):
+        for var in sorted(locals_vars):
             formatted.append(f"* {var}")
             
         return "\n".join(formatted) 
@@ -229,10 +229,14 @@ class MarkdownGenerator:
         for route in routes:
             name = route.get('name', '')
             path = route.get('path', '')
-            methods = ', '.join(route.get('methods', ['GET']))
+            methods = route.get('methods', ['GET'])
             controller = route.get('controller', '')
             
-            formatted.append(f"* **{name}** - {path} ({methods}) - {controller}")
+            methods_str = f" ({', '.join(methods)})"
+            formatted.append(f"* {name}:")
+            formatted.append(f"  - **Path:** `{path}`")
+            formatted.append(f"  - **Methods:** {methods_str}")
+            formatted.append(f"  - **Controller:** `{controller}`")
             
         return "\n".join(formatted)
 
@@ -268,14 +272,16 @@ class MarkdownGenerator:
                 'libraries': self._format_libraries(data.get('libraries', [])),
                 'services': self._format_services(data.get('services', [])),
                 'language': data.get('language', 'PHP'),
-                'doc_md': data.get('doc_md', ''),
-                'globals': self._format_globals(data.get('variables', {}).get('globals_var', [])),
-                'locals': self._format_locals(data.get('variables', {}).get('locals_var', [])),
+                'doc_md': f"{Path(data.get('file_name', '')).stem}.md",
+                'globals': self._format_globals(data.get('variables', {}).get('globals', [])),
+                'locals': self._format_locals(data.get('variables', {}).get('locals', [])),
                 'tables': self._format_tables(data.get('tables', [])),
                 'connections': self._format_connections(data.get('connections', {}).get('conectores', [])),
                 'databases': self._format_databases(data.get('connections', {}).get('databases', [])),
                 'functions': self._format_functions(data.get('functions', [])),
                 'routes': self._format_routes(data.get('routes', [])),
+                'relative_path': self._get_relative_path(data.get('path', ''), self.output_dir),
+                'reference_path': self._get_relative_path(self.output_dir, data.get('doc_md')),
                 'author': data.get('author', 'José Abel Carvajal')
             }
             
