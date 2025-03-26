@@ -111,6 +111,52 @@ def get_file_history(file_path: Union[str, Path], max_entries: int = 10) -> List
         logging.error(f"Error obteniendo historial Git: {e}")
         return []
 
+def get_file_history_since(file_path: Union[str, Path], since_date: str) -> List[Dict[str, str]]:
+    """
+    Obtiene el historial de cambios de un archivo desde una fecha específica.
+    
+    Args:
+        file_path: Ruta al archivo
+        since_date: Fecha desde la cual obtener el historial (formato: YYYY-MM-DD)
+        
+    Returns:
+        List[Dict]: Lista de diccionarios con la información de cada commit
+    """
+    if not is_git_repo(Path(file_path).parent):
+        return []
+    
+    try:
+        # Formato personalizado: hash, autor, fecha, mensaje
+        format_str = "--pretty=format:%H|%an|%ad|%s"
+        
+        result = subprocess.run(
+            ["git", "log", format_str, f"--since={since_date}", "--date=short", "--", str(file_path)],
+            cwd=Path(file_path).parent,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        
+        commits = []
+        for line in result.stdout.strip().split('\n'):
+            if not line:
+                continue
+            
+            parts = line.split('|', 3)
+            if len(parts) >= 4:
+                commits.append({
+                    'hash': parts[0],
+                    'author': parts[1],
+                    'date': parts[2],
+                    'message': parts[3]
+                })
+        
+        return commits
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error obteniendo historial Git desde {since_date}: {e}")
+        return []
+
 
 def get_file_contributors(file_path: Union[str, Path]) -> List[Dict[str, Union[str, int]]]:
     """

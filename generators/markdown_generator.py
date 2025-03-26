@@ -12,7 +12,7 @@ class MarkdownGenerator:
     
     def __init__(self, output_dir: Path = None):
         """Inicializa el generador de Markdown"""
-        self.output_dir = output_dir or Path("documentador/docs/generated")
+        self.output_dir = output_dir or Path("docs/generated")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.logger = logging.getLogger(__name__)
         self.logger.debug(f"Directorio de salida: {self.output_dir}")
@@ -36,10 +36,10 @@ class MarkdownGenerator:
 {language}
 
 ### **URL**
-* {file_name} -> [Ruta archivo: {file_name}]({relative_path}\{file_name})
+* {file_name} -> [Ruta archivo: {file_name}](../../src/Controller/{file_name})
 
 ### **URL / .md Documentación Archivos Implementados**
-* {doc_md} -> [Ruta archivo: {doc_md}]({reference_path}\{doc_md})
+* {doc_md} -> [Ruta archivo: {doc_md}](../../public/guia_programador/{doc_md})
 
 # **PHP:**
 
@@ -134,7 +134,6 @@ class MarkdownGenerator:
         except ValueError:
             # Si no se puede obtener la ruta relativa, devolver la ruta absoluta
             return str(file_path)
-        
     def _format_libraries(self, libraries: List[str]) -> str:
         """Formatea la sección de librerías"""
         if not libraries:
@@ -169,7 +168,7 @@ class MarkdownGenerator:
         for var in sorted(locals_vars):
             formatted.append(f"* {var}")
             
-        return "\n".join(formatted) 
+        return "\n".join(formatted)
     
     # Ordenar y formatear tablas
     def _format_tables(self, tables: List[str]) -> str:
@@ -182,7 +181,7 @@ class MarkdownGenerator:
             formatted.append(f"* {table}")
             
         return "\n".join(formatted)
-
+    
     def _format_connections(self, connections: List[str]) -> str:
         """Formatea la sección de conexiones"""
         if not connections:
@@ -239,7 +238,7 @@ class MarkdownGenerator:
             formatted.append(f"  - **Controller:** `{controller}`")
             
         return "\n".join(formatted)
-
+    
     def _format_services(self, services: List[str]) -> str:
         """Formatea la sección de servicios"""
         if not services:
@@ -272,7 +271,7 @@ class MarkdownGenerator:
                 'libraries': self._format_libraries(data.get('libraries', [])),
                 'services': self._format_services(data.get('services', [])),
                 'language': data.get('language', 'PHP'),
-                'doc_md': f"{Path(data.get('file_name', '')).stem}.md",
+                'doc_md': data.get('doc_md', ''),
                 'globals': self._format_globals(data.get('variables', {}).get('globals', [])),
                 'locals': self._format_locals(data.get('variables', {}).get('locals', [])),
                 'tables': self._format_tables(data.get('tables', [])),
@@ -280,8 +279,6 @@ class MarkdownGenerator:
                 'databases': self._format_databases(data.get('connections', {}).get('databases', [])),
                 'functions': self._format_functions(data.get('functions', [])),
                 'routes': self._format_routes(data.get('routes', [])),
-                'relative_path': self._get_relative_path(data.get('path', ''), self.output_dir),
-                'reference_path': self._get_relative_path(self.output_dir, data.get('doc_md')),
                 'author': data.get('author', 'José Abel Carvajal')
             }
             
