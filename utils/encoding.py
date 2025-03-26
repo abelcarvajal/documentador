@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 def detect_encoding(content: bytes) -> Tuple[str, float]:
     """
+    Detects the encoding of a given byte content.
+    """
+    """
     Detecta la codificación de un contenido binario.
     
     Args:

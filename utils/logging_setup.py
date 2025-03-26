@@ -14,16 +14,16 @@ def setup_logging(level=logging.DEBUG):
     today = datetime.now().strftime('%Y-%m-%d')
     log_file = log_dir / f"documentador_{today}.log"
     
-    # Crear el logger raÃ­z
+    # Crear el logger raíz
     logger = logging.getLogger()
     logger.setLevel(level)
     
-    # Eliminar handlers existentes para evitar duplicaciÃ³n
+    # Eliminar handlers existentes para evitar duplicación
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
     
     # Crear handler para archivos
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler = logging.FileHandler(log_file, encoding='windows-1252')
     file_handler.setLevel(level)
     file_formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',

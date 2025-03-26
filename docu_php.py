@@ -63,7 +63,7 @@ def generate_changes_report(file_path: Path, changes: List[Dict]) -> None:
     
     output_file = output_dir / f"{file_path.stem}_changes.md"
     
-    with open(output_file, 'w', encoding='utf-8') as f:
+    with open(output_file, 'w', encoding='windows-1252') as f:
         f.write(f"# Cambios en {file_path.name}\n\n")
         f.write(f"Generado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
         
@@ -99,7 +99,8 @@ def main():
     """Funci贸n principal del documentador"""
     parser = argparse.ArgumentParser(description='Documentador de archivos PHP')
     parser.add_argument('-i', '--input', required=True, help='Archivo PHP a documentar')
-    parser.add_argument('-c', '--changes-only', action='store_true', 
+    parser.add_argument('-o', '--output', required=True, help='Ruta de salida para la documentaci髇')
+    parser.add_argument('-c', '--changes-only', action='store_true',
                         help='Documentar solo los cambios Git (sin documentaci贸n completa)')
     parser.add_argument('-g', '--with-git', action='store_true', 
                         help='Incluir informaci贸n Git en la documentaci贸n completa')

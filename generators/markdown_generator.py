@@ -116,7 +116,7 @@ class MarkdownGenerator:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Escribir archivo
-            with open(output_path, 'w', encoding='utf-8') as f:
+            with open(output_path, 'w', encoding='windows-1252') as f:
                 f.write(output)
                 
             self.logger.info(f"Documentación generada en: {output_path}")
