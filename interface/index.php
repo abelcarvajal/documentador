@@ -1,12 +1,28 @@
 <?php
 $output = "";
+$baseDir = 'C:\\git_consuerte\\serversoap_recaudos';
+$outputDirs = [
+    '../docs/generated/' => 'Directorio de Pruebas',
+    '\\public\\guia_programador\\' => 'Directorio de Produccion'
+];
+$docuPhpPath = '../docu_php.py';
+
+//echo "Current working directory: " . getcwd() . "<br>"; // Debug line to check current working directory
 if($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Obtener los datos del formulario
-    $fileInput = escapeshellarg($_POST['fileInput']);
-    $outputDir = escapeshellarg($_POST['outputDir']);
+    $fileInput = $_POST['fileInput'];
+    $outputDir = $_POST['outputDir'];
+
+    if (!file_exists($fileInput)) {
+        echo "El archivo no existe.";
+        exit;
+    }
     
-    $ejecutar = "python -m documentador.docu_php -i $fileInput -o $outputPath";
-    $output = shell_exec($ejecutar);
+    $ejecutar = "python \"$docuPhpPath\" -i \"$fileInput\" -o \"$outputDir\"";
+    //print_r($ejecutar);
+    $output = shell_exec($ejecutar . ' 2>&1'); // Capture both output and errors
+    //echo $output;
+    
 }
 ?>
 
@@ -24,23 +40,19 @@ if($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="container justify-content-center">
         <h2>Generador de Documentacion</h2>
         <div class="row mb-3 h-50 w-50 position-absolute top-50 start-50 translate-middle">
-            <form id="docForm" action="index.php" method="post">
-                <div class="mb-3">
-                    <label for="fileInput" class="form-label">Selecciona el archivo a documentar:</label>
-                    <input type="file" id="fileInput" class="form-control" name="fileInput" required>
-                </div>
-                
-                <div class="mb-3">
-                    <label for="outputPath" class="form-label">Ingrese la ruta de salida:</label>
-                    <input type="text" class="form-control mb-2" id="outputPath" name="outputPath" required>
-                    <input type="button" class="btn btn-secondary" onclick="selectDirectory()" id="selectPath" value="Seleccionar carpeta">
-                </div>
-                
+            <form id="docForm" action="index.php" method="post" enctype="multipart/form-data">
+            <div class="mb-3">
+                <label for="fileInput" class="form-label">Ruta del archivo a documentar:</label>
+                <input type="text" id="fileInput" class="form-control" name="fileInput" required>
+            </div>
+
                 <div class="mb-3">
                     <label for="outputDir" class="form-label">Selecciona el directorio de salida:</label>
                     <select id="outputDir" name="outputDir" class="form-control" required>
-                        <option value="documentador/docs/generated/">Directorio de Pruebas</option>
-                        <option value="C:\git_consuerte\serversoap_recaudos\public\guia_programador/">Directorio de Producciùn</option>
+                        <?php
+                            foreach ($outputDirs as $path => $label): ?>
+                            <option value = <?php echo $baseDir . $path; ?>><?php echo $label; ?></option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
                 <div class="mb-3">

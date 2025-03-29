@@ -10,6 +10,7 @@ from documentador.parsers.js_parser import JSParser
 from documentador.parsers.sql_parser import SQLParser
 from documentador.config.settings import config
 from documentador.utils.events import event_system
+#from documentador.parsers.variable_parser import VariableParser
 
 logger = logging.getLogger(__name__)
 
@@ -872,7 +873,7 @@ class PHPParser:
                         if f"${var_name}" in declaration:
                             log.write(f"  --> Encontrada variable ${var_name}\n")
                 # 2. Buscar variables específicas en todo el archivo
-                log.write("\n=== MENCIONES DE VARIABLES ESPECÍFICAS ===\n")
+                log.write("\n=== MENCIONES DE VARIABLES ESPECÝFICAS ===\n")
                 for var_name in var_names_to_find:
                     log.write(f"\nBuscando ${var_name}:\n")
                     # Patrón para buscar la variable en diferentes contextos
@@ -895,7 +896,7 @@ class PHPParser:
                             line_num = content[:match.start()].count('\n') + 1
                             log.write(f"  Línea {line_num} ({context}): {line}\n")
                 # 3. Analizar el patrón actual para detectar variables globales
-                log.write("\n=== ANÁLISIS DE PATRONES ACTUALES ===\n")
+                log.write("\n=== ANÝLISIS DE PATRONES ACTUALES ===\n")
                 var_pattern = re.compile(r'\$([a-zA-Z_][a-zA-Z0-9_]*)(?![^)]*\))')
                 global_line_pattern = r'global\s+(.+?)(?:;|$)'
                 global_matches = re.finditer(global_line_pattern, content, re.MULTILINE | re.DOTALL)
